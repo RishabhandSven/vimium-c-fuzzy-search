@@ -200,10 +200,30 @@ export const RegExpCache_ = {
 }
 
 export const match2_ = (s1: string, s2: string): boolean => {
+  // 1. Try Standard Exact Matching first (It's faster)
+  let standardMatch = true;
   for (let word of RegExpCache_.parts_) {
-    if (!(word.test(s1) || word.test(s2))) { return false; }
+    if (!(word.test(s1) || word.test(s2))) {
+        standardMatch = false;
+        break; 
+    }
   }
-  return true;
+  if (standardMatch) return true;
+
+  // 2. SDE-1 FIX: If Exact Match failed, check Fuzzy Score!
+  // queryTerms is the global variable containing ["vsc"]
+  const query = queryTerms.join(" ");
+  
+  // Only try fuzzy for short queries to save CPU
+  if (query.length > 0 && query.length < 20) {
+      // Check if Title (s2) or URL (s1) has a fuzzy match > 0
+      // We use your engine from the bottom of the file
+      if (computeFuzzyScore(query, s2) > 0 || computeFuzzyScore(query, s1) > 0) {
+          return true; // Open the door!
+      }
+  }
+
+  return false;
 }
 
 export const getWordRelevancy_ = (url: string, title: string): number => {
@@ -249,9 +269,41 @@ export const ComputeRecency = (lastAccessedTime: number): number => {
       : score < TimeEnums.futureTimeTolerance ? TimeEnums.futureTimeScore : 0
 }
 
+// SDE-1 MODIFICATION: Hybrid Search (Exact + Fuzzy)
+// SDE-1 MODIFICATION: Debugging Version
+// SDE-1 MODIFICATION: The "Super-Boost" Version
 export const ComputeRelevancy = (text: string, title: string, lastVisitTime: number): number => {
-  const recencyScore = ComputeRecency(lastVisitTime), wordRelevancy = getWordRelevancy_(text, title)
-  return recencyScore <= wordRelevancy ? wordRelevancy : (wordRelevancy + recencyScore) / 2
+  const recencyScore = ComputeRecency(lastVisitTime);
+  let wordRelevancy = getWordRelevancy_(text, title);
+
+  const fullQuery = queryTerms.join(" ");
+
+  if (fullQuery.length > 0 && fullQuery.length < 20) {
+      const titleFuzzy = computeFuzzyScore(fullQuery, title);
+      const urlFuzzy = computeFuzzyScore(fullQuery, text);
+      
+      // LOGIC CHANGE: Only trust the score if it comes from the TITLE
+      let finalBoost = 0;
+
+      // 1. High Quality TITLE Match (Visual Studio Code) -> Massive Boost
+      // "vsc" matches "Visual Studio Code" perfectly in the title.
+      if (titleFuzzy > 15) {
+          finalBoost = 20000; // Nuclear option (20k points)
+      } 
+      // 2. High Quality URL Match -> Smaller Boost
+      // "Google...client..." matches in URL. We limit this so it can't beat the title.
+      else if (urlFuzzy > 15) {
+          finalBoost = 5000;
+      }
+      // 3. Weak match -> Small boost
+      else {
+          finalBoost = Math.max(titleFuzzy, urlFuzzy);
+      }
+
+      wordRelevancy += finalBoost;
+  }
+
+  return recencyScore <= wordRelevancy ? wordRelevancy : (wordRelevancy + recencyScore) / 2;
 }
 
 export const get2ndArg = (_s: CompletersNS.CoreSuggestion, score: number): number => score
@@ -488,3 +540,47 @@ TabRecency_.onWndChange_ = (): void => {
 void settings_.ready_.then((): void => { settings_.postUpdate_("searchEngines", null) })
 
 if (!Build.NDEBUG) { (globalThis as any).MatchCacheManager = MatchCacheManager_ }
+export function computeFuzzyScore(query: string, text: string): number {
+    const q = query.toLowerCase();
+    const t = text.toLowerCase();
+    
+    if (q.length === 0) return 0;
+    if (t.indexOf(q[0]) === -1) return 0;
+
+    let queryIdx = 0;
+    let textIdx = 0;
+    let score = 0; // NEW: We track a score now
+
+    while (textIdx < t.length) {
+        if (t[textIdx] === q[queryIdx]) {
+            
+            // --- NEW: BONUS LOGIC ---
+            // Check the character BEFORE this match.
+            // If it is the start of the string (textIdx === 0) OR a space/slash/hyphen...
+            // Fix: Use simple string check to avoid RegExp type conflicts
+            const prevChar = t[textIdx - 1];
+            if (textIdx === 0 || " /-_".includes(prevChar)) {   
+                score += 10; // Big Bonus for Word Start!
+            }
+            else        {
+                score += 1;  // Small point for random match
+            }
+
+            queryIdx++;
+            
+            if (queryIdx === q.length) {
+                return score; // Return the total score
+            }
+        }
+        textIdx++;
+    }
+
+    return 0;
+}
+
+// UPDATE TESTS
+console.log("Score 'vsc' vs 'Visual Studio Code':", computeFuzzyScore("vsc", "Visual Studio Code"));
+// Expected: ~30 points (3 word starts)
+
+console.log("Score 'vsc' vs 'Varies Codes':", computeFuzzyScore("vsc", "Varies Codes"));
+// Expected: ~12 points (V matches start, s and c match inside)

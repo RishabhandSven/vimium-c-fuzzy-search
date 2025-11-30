@@ -4,6 +4,7 @@
     "outDir": "..",
     "rootDir": "..",
     "tsBuildInfoFile": "../scripts/.ts.content.build",
+    "ignoreDeprecations": "6.0"
   },
   "include": [ "*.ts", "../lib/*.ts" ],
   "exclude": [ "../lib/injector.ts", "../lib/simple_eval.ts" ],
